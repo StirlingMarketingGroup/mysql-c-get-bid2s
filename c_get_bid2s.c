@@ -178,6 +178,7 @@ int free_set(set *s) {
         }
     }
 
+    free(s->nodes);
     free(s);
     return 0;
 }
@@ -240,6 +241,7 @@ char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long 
         i++;
     }
 
+    free(hex_bid2);
     free_set(s);
 
     if (j) {
