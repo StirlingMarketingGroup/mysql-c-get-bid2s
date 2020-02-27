@@ -9,9 +9,9 @@
                 "-O3",
                 "-I/usr/include/mysql",
                 "-o",
-                "${fileDirname}/${fileBasenameNoExtension}.so",
+                "${workspaceRoot}/c_get_bid2s.so",
                 "-shared",
-                "${file}",
+                "${workspaceRoot}/c_get_bid2s.c",
                 "-fPIC"
             ],
             "options": {

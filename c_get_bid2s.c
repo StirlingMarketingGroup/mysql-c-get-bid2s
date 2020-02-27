@@ -1,10 +1,14 @@
 #include <string.h>
 #include <ctype.h>
+#include <stdio.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdlib.h>
+
 #include "mysql.h"
 
-#ifndef __cplusplus
-#include <stdbool.h>
-#endif
+#define HEX_LEN 16
+#define B64U_LEN 11
 
 bool c_get_bid2s_init(UDF_INIT *initid, UDF_ARGS *args, char *message);
 char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, unsigned char *is_null, unsigned char *error);
@@ -48,9 +52,6 @@ bool is_b64u(char *s, int len) {
     return 1;
 }
 
-#define HEX_LEN 16
-#define B64U_LEN 11
-
 const unsigned char base64_dtable[256] = {
 	0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 	0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
@@ -74,7 +75,7 @@ char *b64decode_mod(const unsigned char *table, const void* data, const size_t l
 	unsigned char* p = (unsigned char*)data;
 	int pad = len > 0 && (len % 4 || p[len - 1] == '=');
 	const size_t L = ((len + 3) / 4 - pad) * 4;
-	char *str = malloc(sizeof(char) * 3*((len+3)/4));
+	char *str = (char *)malloc(sizeof(char) * 3*((len+3)/4));
 
 	int j = 0;
 	for (size_t i = 0; i < L; i += 4) {
@@ -99,55 +100,104 @@ char *b64decode_mod(const unsigned char *table, const void* data, const size_t l
 
 static char hexconvtab[] = "0123456789abcdef";
 
-static char* php_bin2hex(const unsigned char *old, const size_t oldlen) {
-    char *result = (char*) malloc(oldlen * 2 + 1);
+int bin2hex(char *ret, const unsigned char *old, const size_t oldlen) {
     size_t i, j;
 
     for (i = j = 0; i < oldlen; i++) {
-        result[j++] = hexconvtab[old[i] >> 4];
-        result[j++] = hexconvtab[old[i] & 15];
+        ret[j++] = hexconvtab[old[i] >> 4];
+        ret[j++] = hexconvtab[old[i] & 15];
     }
-    result[j] = '\0';
-    return result;
+    ret[j] = '\0';
+    return 0;
 }
 
-/*
- * The memmem() function finds the start of the first occurrence of the
- * substring 'needle' of length 'nlen' in the memory area 'haystack' of
- * length 'hlen'.
- *
- * The return value is a pointer to the beginning of the sub-string, or
- * NULL if the substring is not found.
- */
-// void *memmem(const void *haystack, size_t hlen, const void *needle, size_t nlen)
-// {
-//     int needle_first;
-//     const void *p = haystack;
-//     size_t plen = hlen;
+typedef struct node {
+   unsigned long l;
+   struct node *next;
+} node;
 
-//     if (!nlen)
-//         return NULL;
+typedef struct set{
+    node **nodes;
+    size_t cap;
+} set;
 
-//     needle_first = *(unsigned char *)needle;
+set *new_set(size_t cap) {
+    set *s = malloc(sizeof(set));
 
-//     while (plen >= nlen && (p = memchr(p, needle_first, plen - nlen + 1)))
-//     {
-//         if (!memcmp(p, needle, nlen))
-//             return (void *)p;
+    s->nodes = malloc(sizeof(node) * cap);
+    for (int i = 0; i < cap; i++) {
+        s->nodes[i] = NULL;
+    }
+    s->cap = cap;
 
-//         p++;
-//         plen = hlen - (p - haystack);
-//     }
+    return s;
+}
 
-//     return NULL;
-// }
+size_t set_get_index(set *s, unsigned long l) {
+    return l % s->cap;
+}
+
+node *new_node(unsigned long l) {
+    node *n = malloc(sizeof(node));
+    n->l = l;
+    n->next = NULL;
+
+    return n;
+}
+
+int set_add(set *s, unsigned long l) {
+    size_t i = set_get_index(s, l);
+
+    if (s->nodes[i] == NULL) {
+        s->nodes[i] = new_node(l);
+        return 0;
+    }
+
+    node *curr = s->nodes[i];
+    if (curr->l == l) {
+        return 1;
+    }
+    while (curr->next != NULL) {
+        curr = curr->next;
+        if (curr->l == l) {
+            return 1;
+        }
+    }
+    curr->next = new_node(l);
+
+    return 0;
+}
+
+int free_set(set *s) {
+    for (size_t i = 0; i < s->cap; i++) {
+        node *n = s->nodes[i];
+        while (n != NULL) {
+            node *n2 = n;
+            n = n->next;
+            free(n2);
+        }
+    }
+
+    free(s);
+    return 0;
+}
 
 char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, unsigned char *is_null, unsigned char *error) {
-    char *bid2s = malloc(sizeof(char) * args->lengths[0]);
+    char *bid2s = (char *)malloc(sizeof(char) * (int)ceil((float)args->lengths[0]/B64U_LEN*HEX_LEN));
     char *bs = args->args[0];
     size_t len = args->lengths[0];
     size_t j = 0;
     size_t i = 0;
+
+    if (len<B64U_LEN) {
+        *length = 0;
+        return "";
+    }
+
+    bool found = false;
+    char *hex_bid2 = (char *)malloc(sizeof(char) * HEX_LEN+1);
+
+    set *s = new_set(len/(B64U_LEN+1)+1);
 
     while (i < args->lengths[0]) {
         char b = bs[i];
@@ -158,31 +208,39 @@ char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long 
             (i+1+HEX_LEN+1 >= len || !isalnum(bs[i+1+HEX_LEN+1]))) {
 
             i += 2;
-            // if (memmem(bid2s, j, bs+i, HEX_LEN) == NULL) {
-            for (int k = 0; k < HEX_LEN; k++) {
-                bid2s[j++] = tolower(bs[i++]);
-            }
-            bid2s[j++] = ' ';
-            // } else {
-            //     i += HEX_LEN;
-            // }
+            strncpy(hex_bid2, bs+i, HEX_LEN);
+            hex_bid2[HEX_LEN] = '\0';
+            i += HEX_LEN;
+
+            found = true;
         } else if (is_b64u_char(b) &&
             (i == 0 || !is_b64u_char(bs[i-1])) &&
             i+B64U_LEN-1 < len && is_b64u(bs+i, B64U_LEN) &&
             (i+B64U_LEN >= len || !is_b64u_char(bs[i+B64U_LEN]))) {
 
-            char *hex = php_bin2hex(b64decode_mod(base64_dtable, bs+i, B64U_LEN), 8);
-            // if (memmem(bid2s, j, hex, HEX_LEN) == NULL) {
-            for (char *t = hex; *t != '\0'; t++) {
-                bid2s[j++] = *t;
-            }
-            bid2s[j++] = ' ';
-            // }
+            char *bytes = b64decode_mod(base64_dtable, bs+i, B64U_LEN);
+            bin2hex(hex_bid2, bytes, 8);
+            free(bytes);
             i += B64U_LEN;
+
+            found = true;
+        }
+
+        if (found) {
+            unsigned long l = strtoul(hex_bid2, NULL, 16);
+            if (!set_add(s, l)) {
+                for (char *t = hex_bid2; *t != '\0'; t++) {
+                    bid2s[j++] = *t;
+                }
+                bid2s[j++] = ' ';;
+            }
+            found = false;
         }
 
         i++;
     }
+
+    free_set(s);
 
     if (j) {
         *length = j-1;
