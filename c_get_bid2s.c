@@ -10,23 +10,6 @@
 #define HEX_LEN 16
 #define B64U_LEN 11
 
-bool c_get_bid2s_init(UDF_INIT *initid, UDF_ARGS *args, char *message);
-char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, unsigned char *is_null, unsigned char *error);
-
-bool c_get_bid2s_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
-	if (args->arg_count != 1) {
-		strcpy(message, "`c_get_bid2s`() requires 1 parameter: the string to have bid2s collected from");
-		return 1;
-	}
-
-	args->arg_type[0] = STRING_RESULT;
-
-	initid->maybe_null = 0; // cannot return null
-    initid->max_length = 32;
-
-	return 0;
-}
-
 bool is_hex(char *s, int len) {
     for (int i = 0; i < len; i++) {
         if (!isxdigit(s[i])) {
@@ -183,8 +166,31 @@ int free_set(set *s) {
     return 0;
 }
 
+bool c_get_bid2s_init(UDF_INIT *initid, UDF_ARGS *args, char *message);
+bool c_get_bid2s_deinit(UDF_INIT *initid);
+char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, unsigned char *is_null, unsigned char *error);
+
+bool c_get_bid2s_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
+	if (args->arg_count != 1) {
+		strcpy(message, "`c_get_bid2s`() requires 1 parameter: the string to have bid2s collected from");
+		return 1;
+	}
+
+	args->arg_type[0] = STRING_RESULT;
+
+	initid->maybe_null = 0; // cannot return null
+
+    initid->ptr = (char *)malloc(sizeof(char) * (int)ceil((float)args->lengths[0]/B64U_LEN*HEX_LEN));
+
+	return 0;
+}
+
+bool c_get_bid2s_deinit(UDF_INIT *initid) {
+    free(initid->ptr);
+    return 0;
+}
+
 char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, unsigned char *is_null, unsigned char *error) {
-    char *bid2s = (char *)malloc(sizeof(char) * (int)ceil((float)args->lengths[0]/B64U_LEN*HEX_LEN));
     char *bs = args->args[0];
     size_t len = args->lengths[0];
     size_t j = 0;
@@ -231,9 +237,9 @@ char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long 
             unsigned long l = strtoul(hex_bid2, NULL, 16);
             if (!set_add(s, l)) {
                 for (char *t = hex_bid2; *t != '\0'; t++) {
-                    bid2s[j++] = *t;
+                    initid->ptr[j++] = *t;
                 }
-                bid2s[j++] = ' ';;
+                initid->ptr[j++] = ' ';;
             }
             found = false;
         }
@@ -249,5 +255,5 @@ char *c_get_bid2s(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long 
     } else {
         *length = 0;
     }
-	return bid2s;
+	return initid->ptr;
 }
